@@ -225,30 +225,54 @@ class pascalVOCDataset(data.Dataset):
         
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #TODO multi-GPU        
 import torch.nn as nn
+import torchvision.models.vgg as vgg
 
 class Segnet(nn.Module):
   
   def __init__(self):
     super(Segnet, self).__init__()
     #define the layers for your model
-    self.bn5 = nn.BatchNorm2d(32)
-    
+    self.vgg_model = vgg.vgg16(pretrained=True, progress=True) 
+    #del self.vgg_model.classifier
+    n_class = 21
+    self.relu    = nn.ReLU(inplace=True)
+    self.deconv1 = nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+    self.bn1     = nn.BatchNorm2d(512) #TODO BN not mentioned in paper
+    self.deconv2 = nn.ConvTranspose2d(512, 256, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+    self.bn2     = nn.BatchNorm2d(256)
+    self.deconv3 = nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+    self.bn3     = nn.BatchNorm2d(128)
+    self.deconv4 = nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+    self.bn4     = nn.BatchNorm2d(64)
+    self.deconv5 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+    self.bn5     = nn.BatchNorm2d(32)
+    self.classifier = nn.Conv2d(32, n_class, kernel_size=1)
 
   def forward(self, x):
     #define the forward pass
-    output = 0 #always background
-    return output
+    #pdb.set_trace()
+    x = self.vgg_model.features(x) # B, 
+    output = self.vgg_model.avgpool(x) # B, 512, 512, 7
+    output_zero = torch.zeros([4, 21, 512, 512], requires_grad=True) #always background
+    score = self.bn1(self.relu(self.deconv1(x)))     # size=(N, 512, x.H/16, x.W/16)
+    score = self.bn2(self.relu(self.deconv2(score)))  # size=(N, 256, x.H/8, x.W/8)
+    score = self.bn3(self.relu(self.deconv3(score)))  # size=(N, 128, x.H/4, x.W/4)
+    score = self.bn4(self.relu(self.deconv4(score)))  # size=(N, 64, x.H/2, x.W/2)
+    score = self.bn5(self.relu(self.deconv5(score)))  # size=(N, 32, x.H, x.W)
+    score = self.classifier(score)                    # size=(N, n_class, x.H/1, x.W/1)
+    return score  # size=(N, n_class, x.H/1, x.W/1)
+    #return output_zero
     
     
 
 # Creating an instance of the model defined above. 
 # You can modify it incase you need to pass paratemers to the constructor.
-model = Segnet()
+model = Segnet().to(device)
 
 
 local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
-bs = 4 #TODO increase
-epochs = 2
+bs = 32 #TODO increase
+epochs = 0
 lr = 0.001
 num_workers = 8 
 
@@ -256,7 +280,7 @@ num_workers = 8
 dst = pascalVOCDataset(local_path, split="train", is_transform=True)
 
 # dataloader variable
-trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers)
+trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers, pin_memory=True)
 
 
 
@@ -266,25 +290,103 @@ loss_f = nn.CrossEntropyLoss()
 
 # optimizer variable
 import torch.optim as optim
-opt = optim.Adam(model.parameters(), lr=lr)
+opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
 
-i_print = 10
+i_print = 2
+
 for epoch in range(epochs):
-  for i, d in enumerate(trainloader):
+  for i, (inputs, labels) in enumerate(trainloader):
     # your code goes here
     opt.zero_grad()
-    inputs, targets = d[0], d[1]
+    inputs = inputs.to(device)
+    labels = labels.to(device)
     predictions = model(inputs)
-    loss = loss_f(predictions, targets)
+    loss = loss_f(predictions, labels)
     loss.backward()
     opt.step()
     
     if i % i_print == 0:
-        print("epoch{}, iter{}, loss: {}".format(epoch, i, loss.data[0]))
-        
+        print("epoch{}, iter{}, loss: {}".format(epoch, i, loss.data))
 
 
 def evaluate(ground_truth, predictions):
     
     return f1_score, auc_score, dice_coeeficient
-cient
+    
+    
+#evaluate(dst)
+
+
+import matplotlib.pyplot as plt
+
+def image_grid( #TODO simpify this code
+    images,
+    rows=None,
+    cols=None,
+    fill: bool = True,
+    show_axes: bool = False,
+    rgb: bool = True,
+):
+    """
+    A util function for plotting a grid of images.
+
+    Args:
+        images: (N, H, W, 4) array of RGBA images
+        rows: number of rows in the grid
+        cols: number of columns in the grid
+        fill: boolean indicating if the space between images should be filled
+        show_axes: boolean indicating if the axes of the plots should be visible
+        rgb: boolean, If True, only RGB channels are plotted.
+            If False, only the alpha channel is plotted.
+
+    Returns:
+        None
+    """
+    if (rows is None) != (cols is None):
+        raise ValueError("Specify either both rows and cols or neither.")
+
+    if rows is None:
+        rows = len(images)
+        cols = 1
+
+    gridspec_kw = {"wspace": 0.0, "hspace": 0.0} if fill else {}
+    fig, axarr = plt.subplots(rows, cols, gridspec_kw=gridspec_kw, figsize=(15, 9))
+    bleed = 0
+    fig.subplots_adjust(left=bleed, bottom=bleed, right=(1 - bleed), top=(1 - bleed))
+
+    for ax, im in zip(axarr.ravel(), images):
+        if rgb:
+            # only render RGB channels
+            ax.imshow(im[..., :3])
+        else:
+            # only render Alpha channel
+            ax.imshow(im[..., 3])
+        if not show_axes:
+            ax.set_axis_off()
+
+
+# TODO - plot for test images
+pdb.set_trace()
+        
+def get_vis_images(files, split, root, index):        
+    im_name = files[split][index]
+    im_path = pjoin(root, "JPEGImages", im_name + ".jpg")
+    lbl_path = pjoin(root, "SegmentationClass/pre_encoded", im_name + ".png")
+    im = Image.open(im_path)
+    lbl = Image.open(lbl_path)
+    return im, lbl
+
+pdb.set_trace()
+image, label = get_vis_images(dst.files, dst.split, dst.root, 0) #TODO use train/val split
+'''
+image, label = dst[0][0], dst[0][1]      
+image = image.cpu().numpy()
+label = label.cpu().numpy()
+'''
+
+image = np.moveaxis(image, 0, -1) # (3,H,W) to (H,W,3)
+label = dst.decode_segmap(label)
+images_vis = np.array([image, label])
+
+image_grid(images_vis,rows=1, cols=2)
+plt.savefig('vis_train.png')
