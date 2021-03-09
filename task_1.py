@@ -14,8 +14,13 @@ from PIL import Image
 from tqdm import tqdm
 from torch.utils import data
 from torchvision import transforms
-import pdb
 
+import pdb
+import time
+import torch.nn as nn
+import torchvision.models.vgg as vgg
+import torch.optim as optim
+import matplotlib.pyplot as plt
 
 class pascalVOCDataset(data.Dataset):
     """Data loader for the Pascal VOC semantic segmentation dataset.
@@ -76,7 +81,9 @@ class pascalVOCDataset(data.Dataset):
 
         self.tf = transforms.Compose(
             [
-                # add more trasnformations as you see fit
+                # add more trasnformations as you see fit 
+                #transforms.Resize(256),
+                #transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
@@ -89,8 +96,8 @@ class pascalVOCDataset(data.Dataset):
         im_name = self.files[self.split][index]
         im_path = pjoin(self.root, "JPEGImages", im_name + ".jpg")
         lbl_path = pjoin(self.root, "SegmentationClass/pre_encoded", im_name + ".png")
-        im = Image.open(im_path)
-        lbl = Image.open(lbl_path)
+        im = Image.open(im_path) #TODO e images have to be loaded in to a range of [0, 1]
+        lbl = Image.open(lbl_path) 
         if self.augmentations is not None:
             im, lbl = self.augmentations(im, lbl)
         if self.is_transform:
@@ -102,7 +109,7 @@ class pascalVOCDataset(data.Dataset):
             pass
         else:
             img = img.resize((self.img_size[0], self.img_size[1]))  # uint8 with RGB mode
-            lbl = lbl.resize((self.img_size[0], self.img_size[1]))
+            lbl = lbl.resize((self.img_size[0], self.img_size[1]), resample=Image.NEAREST) #TODO train with and without this
         img = self.tf(img)
         lbl = torch.from_numpy(np.array(lbl)).long()
         lbl[lbl == 255] = 0
@@ -223,16 +230,16 @@ class pascalVOCDataset(data.Dataset):
 
         assert expected == 2913, "unexpected dataset sizes"
         
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #TODO multi-GPU        
-import torch.nn as nn
-import torchvision.models.vgg as vgg
+device = torch.device("cuda")# if torch.cuda.is_available() else "cpu") #TODO multi-GPU      
+num_gpu = list(range(torch.cuda.device_count()))  
+
 
 class Segnet(nn.Module):
   
   def __init__(self):
     super(Segnet, self).__init__()
     #define the layers for your model
-    self.vgg_model = vgg.vgg16(pretrained=True, progress=True) 
+    self.vgg_model = vgg.vgg16(pretrained=True, progress=True).to(device)
     #del self.vgg_model.classifier
     n_class = 21
     self.relu    = nn.ReLU(inplace=True)
@@ -267,60 +274,89 @@ class Segnet(nn.Module):
 
 # Creating an instance of the model defined above. 
 # You can modify it incase you need to pass paratemers to the constructor.
-model = Segnet().to(device)
+#model = Segnet().to(device)
+model = nn.DataParallel(Segnet(), device_ids=num_gpu).to(device)
 
 
 local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
 bs = 32 #TODO increase
-epochs = 0
+epochs = 5 #use 200 
 lr = 0.001
 num_workers = 8 
+i_print = 20 #print loss after every i_print iterations
+i_save = 50#save mode after every i_save epochs
 
 # dataset variable
-dst = pascalVOCDataset(local_path, split="train", is_transform=True)
+dst = pascalVOCDataset(local_path, split="train", is_transform=True)# img_size="same")
 
 # dataloader variable
-trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers, pin_memory=True)
+trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) #TODO shuffle
 
+def eval_pixel_acc(target, pred):
+    correct = (pred == target).sum().item()
+    #total   = (target == target).sum() #TODO - replace by target.size
+    total = target.shape[0] * target.shape[1]
+    return correct / total
 
+def evaluate(ground_truth, predictions):
+    #pdb.set_trace() #TODO can also report 
+    pixel_acc = eval_pixel_acc(ground_truth, predictions)
+    #return f1_score, auc_score, dice_coeeficient
+    return pixel_acc
+    
+    
+evaluate(dst[0][1], dst[0][1])
 
+def val(epoch):
+    model.eval()
+    pixel_accs = []
+    with torch.no_grad():
+        for i, (inputs, labels) in enumerate(trainloader):
+            inputs = inputs.to(device)#N, C, H, W
+            labels = labels.to(device) #N, H, W
+            predictions = model(inputs) #N, C, H, W
+            _, predictions = torch.max(predictions, 1) #N, H, W
+            for p, l in zip(predictions, labels):
+                pixel_acc = evaluate(l, p)
+                pixel_accs.append(pixel_acc)
+        #for epoch in range(epochs):
+        #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
+        #model.load_state_dict(ckpt)
+        # The output has unnormalized scores. To get probabilities, you can run a softmax on it.
+        #probabilities = torch.nn.functional.softmax(output[0], dim=0)
+        pixel_accs = np.array(pixel_accs).mean()
+        print("Training results epoch{}, pix_acc: {}".format(epoch, pixel_accs))
 
 # loss function
 loss_f = nn.CrossEntropyLoss() 
 
 # optimizer variable
-import torch.optim as optim
 opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
 
-i_print = 2
-
+val(0)
 for epoch in range(epochs):
-  for i, (inputs, labels) in enumerate(trainloader):
-    # your code goes here
-    opt.zero_grad()
-    inputs = inputs.to(device)
-    labels = labels.to(device)
-    predictions = model(inputs)
-    loss = loss_f(predictions, labels)
-    loss.backward()
-    opt.step()
-    
-    if i % i_print == 0:
-        print("epoch{}, iter{}, loss: {}".format(epoch, i, loss.data))
+    st = time.time()
+    model.train()
+    for i, (inputs, labels) in enumerate(trainloader):
+        # your code goes here
+        opt.zero_grad()
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        predictions = model(inputs)
+        loss = loss_f(predictions, labels)
+        loss.backward()
+        opt.step()
+        
+        if i % i_print == 0:
+            print("Finish iter {}, loss {}".format(i, loss.data))
+    print("Finish epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    val(epoch)
+    if epoch % i_save == 0:
+        torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
 
 
-def evaluate(ground_truth, predictions):
-    
-    return f1_score, auc_score, dice_coeeficient
-    
-    
-#evaluate(dst)
 
-
-import matplotlib.pyplot as plt
-
-def image_grid( #TODO simpify this code
-    images,
+def image_grid(images,
     rows=None,
     cols=None,
     fill: bool = True,
@@ -366,27 +402,26 @@ def image_grid( #TODO simpify this code
 
 
 # TODO - plot for test images
-pdb.set_trace()
+
         
-def get_vis_images(files, split, root, index):        
+def get_vis_images(files, split, root, index):    
+    #pdb.set_trace()
     im_name = files[split][index]
     im_path = pjoin(root, "JPEGImages", im_name + ".jpg")
     lbl_path = pjoin(root, "SegmentationClass/pre_encoded", im_name + ".png")
-    im = Image.open(im_path)
-    lbl = Image.open(lbl_path)
-    return im, lbl
+    im = imageio.imread(im_path)
+    im = im / 255
+    lbl = imageio.imread(lbl_path)
+    lbl = dst.decode_segmap(lbl)
+    images_vis = np.array([im, lbl])#', dtype='uint8')
+    return images_vis
 
-pdb.set_trace()
-image, label = get_vis_images(dst.files, dst.split, dst.root, 0) #TODO use train/val split
+images_vis = get_vis_images(dst.files, dst.split, dst.root, 0) #TODO use train/val split
 '''
-image, label = dst[0][0], dst[0][1]      
+image, label = dst[0][0], dst[0][1]     
+image = np.moveaxis(image, 0, -1) # (3,H,W) to (H,W,3) 
 image = image.cpu().numpy()
 label = label.cpu().numpy()
 '''
-
-image = np.moveaxis(image, 0, -1) # (3,H,W) to (H,W,3)
-label = dst.decode_segmap(label)
-images_vis = np.array([image, label])
-
 image_grid(images_vis,rows=1, cols=2)
 plt.savefig('vis_train.png')
