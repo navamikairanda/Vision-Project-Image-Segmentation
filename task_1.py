@@ -292,40 +292,78 @@ dst = pascalVOCDataset(local_path, split="train", is_transform=True)# img_size="
 # dataloader variable
 trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) #TODO shuffle
 
+from sklearn.metrics import f1_score, roc_auc_score
+
 def eval_pixel_acc(target, pred):
-    correct = (pred == target).sum().item()
-    #total   = (target == target).sum() #TODO - replace by target.size
-    total = target.shape[0] * target.shape[1]
+    correct = (pred == target).sum().item() 
+    total = target.shape[0] * target.shape[1] * target.shape[2] # N * H * W
+    #total = target.size # N * H * W
     return correct / total
 
-def evaluate(ground_truth, predictions):
+def evaluate(ground_truth, predictions): #IU
     #pdb.set_trace() #TODO can also report 
-    pixel_acc = eval_pixel_acc(ground_truth, predictions)
-    #return f1_score, auc_score, dice_coeeficient
-    return pixel_acc
     
-    
-evaluate(dst[0][1], dst[0][1])
+    pixel_acc = eval_pixel_acc(ground_truth, predictions) 
+    #ground_truth0 = torch.reshape(ground_truth[0], (-1, )).cpu().numpy()
+    #predictions0 = torch.reshape(predictions[0], (-1,)).cpu().numpy()
 
-def val(epoch):
+    #f1_score_val = 1
+    pdb.set_trace()
+    st = time.time()
+    f1_score_vals = []
+    for i in range(ground_truth.shape[0]):
+        gt = torch.reshape(ground_truth[i], (-1, )).cpu().numpy()
+        pred = torch.reshape(predictions[i], (-1,)).cpu().numpy()
+        f1_score_val = f1_score(gt, pred, average='macro')
+        f1_score_vals.append(f1_score_val)
+    print('F1 score time loop {}'.format(time.time()-st))
+    
+    st = time.time()
+    ground_truth = torch.reshape(ground_truth, (-1, )).cpu().numpy()
+    predictions = torch.reshape(predictions, (-1,)).cpu().numpy()
+    f1_score_val = f1_score(ground_truth, predictions, average='macro')
+    print('F1 score time no loop {}'.format(time.time()-st))
+    
+    #f1_score_val = f1_score(ground_truth, predictions, average='micro')
+    #return f1_score, auc_score, dice_coeeficient
+    return pixel_acc, f1_score_val
+    
+    
+#evaluate(dst[0][1], dst[0][1])
+
+def val(epoch): #TODO adapt this to val/test data
+    st = time.time()
     model.eval()
     pixel_accs = []
+    f1_score_vals = []
+    all_predictions = []
+    all_labels = []
+    
     with torch.no_grad():
         for i, (inputs, labels) in enumerate(trainloader):
             inputs = inputs.to(device)#N, C, H, W
             labels = labels.to(device) #N, H, W
             predictions = model(inputs) #N, C, H, W
             _, predictions = torch.max(predictions, 1) #N, H, W
-            for p, l in zip(predictions, labels):
-                pixel_acc = evaluate(l, p)
-                pixel_accs.append(pixel_acc)
+            all_predictions.append(predictions)
+            all_labels.append(labels)
+        et = time.time()
+        print("Finish validation epoch {}, time elapsed {}".format(epoch, et - st))
         #for epoch in range(epochs):
         #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
         #model.load_state_dict(ckpt)
         # The output has unnormalized scores. To get probabilities, you can run a softmax on it.
         #probabilities = torch.nn.functional.softmax(output[0], dim=0)
-        pixel_accs = np.array(pixel_accs).mean()
-        print("Training results epoch{}, pix_acc: {}".format(epoch, pixel_accs))
+        all_predictions = torch.cat(all_predictions)
+        all_labels = torch.cat(all_labels)
+        pixel_acc, f1_score_val = evaluate(all_predictions, all_labels)
+        #for p, l in zip(all_predictions, all_labels):
+            #pixel_acc, f1_score_val = evaluate(l, p)
+            #pixel_accs.append(pixel_acc)
+            #f1_score_vals.append(f1_score_val)
+        #pixel_accs = np.array(pixel_accs).mean()
+        #f1_score_vals = np.array(f1_score_val s).mean()
+        print("Finish evaluation epoch {}, time elapsed {}, pix_acc {}, f1_score_val {}".format(epoch, time.time() - et, pixel_acc, f1_score_val))
 
 # loss function
 loss_f = nn.CrossEntropyLoss() 
@@ -349,7 +387,7 @@ for epoch in range(epochs):
         
         if i % i_print == 0:
             print("Finish iter {}, loss {}".format(i, loss.data))
-    print("Finish epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
     val(epoch)
     if epoch % i_save == 0:
         torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
