@@ -236,12 +236,11 @@ num_gpu = list(range(torch.cuda.device_count()))
 
 class Segnet(nn.Module):
   
-  def __init__(self):
+  def __init__(self, n_classes):
     super(Segnet, self).__init__()
     #define the layers for your model
     self.vgg_model = vgg.vgg16(pretrained=True, progress=True).to(device)
     #del self.vgg_model.classifier
-    n_class = 21
     self.relu    = nn.ReLU(inplace=True)
     self.deconv1 = nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
     self.bn1     = nn.BatchNorm2d(512) #TODO BN not mentioned in paper
@@ -253,7 +252,7 @@ class Segnet(nn.Module):
     self.bn4     = nn.BatchNorm2d(64)
     self.deconv5 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
     self.bn5     = nn.BatchNorm2d(32)
-    self.classifier = nn.Conv2d(32, n_class, kernel_size=1)
+    self.classifier = nn.Conv2d(32, n_classes, kernel_size=1)
 
   def forward(self, x):
     #define the forward pass
@@ -266,33 +265,45 @@ class Segnet(nn.Module):
     score = self.bn3(self.relu(self.deconv3(score)))  # size=(N, 128, x.H/4, x.W/4)
     score = self.bn4(self.relu(self.deconv4(score)))  # size=(N, 64, x.H/2, x.W/2)
     score = self.bn5(self.relu(self.deconv5(score)))  # size=(N, 32, x.H, x.W)
-    score = self.classifier(score)                    # size=(N, n_class, x.H/1, x.W/1)
+    score = self.classifier(score)                    # size=(N, n_classes, x.H/1, x.W/1)
     return score  # size=(N, n_class, x.H/1, x.W/1)
     #return output_zero
     
     
 
+# Hyper-parameters
+# Dataset options
+local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
+bs = 32 #TODO increase
+num_workers = 8 
+n_classes = 21
+img_size = 256 #'same'
+
+# Training parameters
+epochs = 1 #use 200 
+lr = 0.001
+
+# Logging options
+i_print = 20 #print loss after every i_print iterations
+i_save = 50#save mode after every i_save epochs
+i_vis = 20
+
+# dataset variable
+train_dst = pascalVOCDataset(local_path, split="train", is_transform=True, img_size=img_size)
+val_dst = pascalVOCDataset(local_path, split="val", is_transform=True, img_size=img_size)
+
+# dataloader variable
+trainloader = torch.utils.data.DataLoader(train_dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) 
+valloader = torch.utils.data.DataLoader(val_dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) 
+
 # Creating an instance of the model defined above. 
 # You can modify it incase you need to pass paratemers to the constructor.
 #model = Segnet().to(device)
-model = nn.DataParallel(Segnet(), device_ids=num_gpu).to(device)
+model = nn.DataParallel(Segnet(n_classes), device_ids=num_gpu).to(device)
 
-
-local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
-bs = 32 #TODO increase
-epochs = 5 #use 200 
-lr = 0.001
-num_workers = 8 
-i_print = 20 #print loss after every i_print iterations
-i_save = 50#save mode after every i_save epochs
-
-# dataset variable
-dst = pascalVOCDataset(local_path, split="train", is_transform=True)# img_size="same")
-
-# dataloader variable
-trainloader = torch.utils.data.DataLoader(dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) #TODO shuffle
-
-from sklearn.metrics import f1_score, roc_auc_score
+#from sklearn.metrics import f1_score, roc_auc_score
+#from pytorch_lightning.metrics import AUROC, F1, dice_score
+from pytorch_lightning import metrics
 
 def eval_pixel_acc(target, pred):
     correct = (pred == target).sum().item() 
@@ -300,7 +311,15 @@ def eval_pixel_acc(target, pred):
     #total = target.size # N * H * W
     return correct / total
 
-def evaluate(ground_truth, predictions): #IU
+def setup_metrics():
+    auroc = metrics.AUROC(num_classes=n_classes)
+    return auroc
+    
+def evaluate_metrics(target, preds): #IU
+    auroc.update(preds, target)
+    auroc.compute()
+    return pixel_acc, f1_score_val
+    '''
     #pdb.set_trace() #TODO can also report 
     
     pixel_acc = eval_pixel_acc(ground_truth, predictions) 
@@ -309,6 +328,10 @@ def evaluate(ground_truth, predictions): #IU
 
     #f1_score_val = 1
     pdb.set_trace()
+    
+    roc_auc_score(ground_truth, predictions)
+    auroc.update(preds, target)
+    auroc.compute()
     st = time.time()
     f1_score_vals = []
     for i in range(ground_truth.shape[0]):
@@ -327,70 +350,76 @@ def evaluate(ground_truth, predictions): #IU
     #f1_score_val = f1_score(ground_truth, predictions, average='micro')
     #return f1_score, auc_score, dice_coeeficient
     return pixel_acc, f1_score_val
+    '''
     
-    
-#evaluate(dst[0][1], dst[0][1])
+#evaluate(train_dst[0][1], train_dst[0][1])
 
-def val(epoch): #TODO adapt this to val/test data
+def evaluate(epoch, split): #TODO adapt this to val/test data
     st = time.time()
     model.eval()
+    '''
     pixel_accs = []
     f1_score_vals = []
     all_predictions = []
     all_labels = []
-    
+    '''
+    if split == 'train':
+        dataloader = trainloader
+    elif split == 'val':
+        raise NotImplementedError('Not done')
+    auroc = metrics.AUROC(num_classes=n_classes).to(device)
+    f1 = metrics.F1(num_classes=n_classes).to(device)
+    iou = metrics.IoU(num_classes=n_classes).to(device)
+    accuracy = metrics.Accuracy().to(device)
+    #fpr, tpr, _ = roc_curve(y, y_score)
+    #roc_auc = auc(fpr, tpr)
+    #pdb.set_trace()
     with torch.no_grad():
-        for i, (inputs, labels) in enumerate(trainloader):
-            inputs = inputs.to(device)#N, C, H, W
+        for i, (inputs, labels) in enumerate(dataloader):
+            inputs = inputs.to(device)#N, H, W
             labels = labels.to(device) #N, H, W
             predictions = model(inputs) #N, C, H, W
-            _, predictions = torch.max(predictions, 1) #N, H, W
+            #_, predictions = torch.max(predictions, 1) #N, H, W
+            #evaluate(all_predictions, all_labels)
+            #evaluate(predictions, labels)
+            predictions = softmax(predictions)
+            #pdb.set_trace()
+            #_, labels = torch.max(predictions, dim=1)
+            auroc.update(predictions, labels)
+            f1.update(predictions, labels)
+            iou.update(predictions, labels)
+            accuracy.update(predictions, labels)
+            
+            '''
             all_predictions.append(predictions)
             all_labels.append(labels)
+            '''
+        auroc_val = auroc.compute()
+        f1_val = f1.compute()
+        iou_val = iou.compute()
+        accuracy_val = accuracy.compute()
+        auroc.reset()
+        f1.reset()
+        iou.reset()
+        accuracy.reset()
         et = time.time()
         print("Finish validation epoch {}, time elapsed {}".format(epoch, et - st))
-        #for epoch in range(epochs):
-        #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
-        #model.load_state_dict(ckpt)
+
         # The output has unnormalized scores. To get probabilities, you can run a softmax on it.
         #probabilities = torch.nn.functional.softmax(output[0], dim=0)
+        '''
         all_predictions = torch.cat(all_predictions)
         all_labels = torch.cat(all_labels)
         pixel_acc, f1_score_val = evaluate(all_predictions, all_labels)
+        '''
         #for p, l in zip(all_predictions, all_labels):
             #pixel_acc, f1_score_val = evaluate(l, p)
             #pixel_accs.append(pixel_acc)
             #f1_score_vals.append(f1_score_val)
         #pixel_accs = np.array(pixel_accs).mean()
         #f1_score_vals = np.array(f1_score_val s).mean()
-        print("Finish evaluation epoch {}, time elapsed {}, pix_acc {}, f1_score_val {}".format(epoch, time.time() - et, pixel_acc, f1_score_val))
+        print("Finish evaluation epoch {}, accuracy {}, IoU {}, auroc {}, f1_val {}".format(epoch, accuracy_val, iou_val, auroc_val, f1_val))
 
-# loss function
-loss_f = nn.CrossEntropyLoss() 
-
-# optimizer variable
-opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
-
-val(0)
-for epoch in range(epochs):
-    st = time.time()
-    model.train()
-    for i, (inputs, labels) in enumerate(trainloader):
-        # your code goes here
-        opt.zero_grad()
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-        predictions = model(inputs)
-        loss = loss_f(predictions, labels)
-        loss.backward()
-        opt.step()
-        
-        if i % i_print == 0:
-            print("Finish iter {}, loss {}".format(i, loss.data))
-    print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
-    val(epoch)
-    if epoch % i_save == 0:
-        torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
 
 
 
@@ -442,11 +471,11 @@ def image_grid(images,
 # TODO - plot for test images
 
         
-def get_vis_images(files, split, root, index):    
+def get_vis_images(dst, index):    
     #pdb.set_trace()
-    im_name = files[split][index]
-    im_path = pjoin(root, "JPEGImages", im_name + ".jpg")
-    lbl_path = pjoin(root, "SegmentationClass/pre_encoded", im_name + ".png")
+    im_name = dst.files[dst.split][index]
+    im_path = pjoin(dst.root, "JPEGImages", im_name + ".jpg")
+    lbl_path = pjoin(dst.root, "SegmentationClass/pre_encoded", im_name + ".png")
     im = imageio.imread(im_path)
     im = im / 255
     lbl = imageio.imread(lbl_path)
@@ -454,12 +483,75 @@ def get_vis_images(files, split, root, index):
     images_vis = np.array([im, lbl])#', dtype='uint8')
     return images_vis
 
-images_vis = get_vis_images(dst.files, dst.split, dst.root, 0) #TODO use train/val split
+
+image, label = train_dst[0][0], train_dst[0][1]
+image = image[None, ...]
+
+predicted = model(image)
+predicted = torch.argmax(predicted, dim=1)
+
+predicted = torch.squeeze(predicted)
+pdb.set_trace()
+image = torch.squeeze(image)
+MEAN = torch.tensor([0.485, 0.456, 0.406])
+STD = torch.tensor([0.229, 0.224, 0.225])
+image = image * STD[:, None, None] + MEAN[:, None, None]
+image = torch.movedim(image, 0, -1)
+
+image = image.cpu().numpy()
+label = label.cpu().numpy()
+predicted = predicted.cpu().numpy()
+
+label = train_dst.decode_segmap(label)
+predicted = train_dst.decode_segmap(predicted)
+ 
+images_vis = np.array([image, label, predicted])
+image_grid(images_vis,rows=1, cols=3)
+plt.savefig('vis_train_all.png')
+
 '''
-image, label = dst[0][0], dst[0][1]     
+image, label = train_dst[0][0], train_dst[0][1]     
 image = np.moveaxis(image, 0, -1) # (3,H,W) to (H,W,3) 
 image = image.cpu().numpy()
 label = label.cpu().numpy()
 '''
+images_vis = get_vis_images(train_dst, 0) #TODO use train/val split, random choose index
 image_grid(images_vis,rows=1, cols=2)
 plt.savefig('vis_train.png')
+
+        #for epoch in range(epochs):
+        #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
+        #model.load_state_dict(ckpt)
+        
+# loss function
+loss_f = nn.CrossEntropyLoss() 
+softmax = nn.Softmax(dim=1)
+
+# optimizer variable
+opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
+
+evaluate(-1, 'train')
+for epoch in range(epochs):
+    st = time.time()
+    model.train()
+    for i, (inputs, labels) in enumerate(trainloader):
+        # your code goes here
+        opt.zero_grad()
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        predictions = model(inputs)
+        loss = loss_f(predictions, labels)
+        loss.backward()
+        opt.step()
+        
+        if i % i_print == 0:
+            print("Finish iter {}, loss {}".format(i, loss.data))
+    print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    evaluate(epoch, 'train')
+    if epoch % i_save == 0:
+        torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
+    if epoch % i_vis == 0:
+        #TODO plot metrics
+        #TODO plot result images
+        pass
+        
