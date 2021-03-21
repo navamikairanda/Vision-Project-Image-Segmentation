@@ -282,13 +282,13 @@ n_classes = 21
 img_size = 256 #'same'
 
 # Training parameters
-epochs = 3 #use 200 
+epochs = 8 #use 200 
 lr = 0.001
 
 # Logging options
 i_print = 20 #print loss after every i_print iterations
 i_save = 50#save mode after every i_save epochs
-i_vis = 1
+i_vis = 3
 rows, cols = 5, 2 #Show 10 images in the dataset along with target and predicted masks
 
 # dataset variable
@@ -322,113 +322,51 @@ def evaluate_metrics(target, preds): #IU
     auroc.update(preds, target)
     auroc.compute()
     return pixel_acc, f1_score_val
-    '''
-    #pdb.set_trace() #TODO can also report 
     
-    pixel_acc = eval_pixel_acc(ground_truth, predictions) 
-    #ground_truth0 = torch.reshape(ground_truth[0], (-1, )).cpu().numpy()
-    #predictions0 = torch.reshape(predictions[0], (-1,)).cpu().numpy()
-
-    #f1_score_val = 1
-    pdb.set_trace()
-    
-    roc_auc_score(ground_truth, predictions)
-    auroc.update(preds, target)
-    auroc.compute()
-    st = time.time()
-    f1_score_vals = []
-    for i in range(ground_truth.shape[0]):
-        gt = torch.reshape(ground_truth[i], (-1, )).cpu().numpy()
-        pred = torch.reshape(predictions[i], (-1,)).cpu().numpy()
-        f1_score_val = f1_score(gt, pred, average='macro')
-        f1_score_vals.append(f1_score_val)
-    print('F1 score time loop {}'.format(time.time()-st))
-    
-    st = time.time()
-    ground_truth = torch.reshape(ground_truth, (-1, )).cpu().numpy()
-    predictions = torch.reshape(predictions, (-1,)).cpu().numpy()
-    f1_score_val = f1_score(ground_truth, predictions, average='macro')
-    print('F1 score time no loop {}'.format(time.time()-st))
-    
-    #f1_score_val = f1_score(ground_truth, predictions, average='micro')
-    #return f1_score, auc_score, dice_coeeficient
-    return pixel_acc, f1_score_val
-    '''
-    
-#evaluate(train_dst[0][1], train_dst[0][1])
-
 def evaluate(epoch, dataloader): #TODO adapt this to val/test data
     st = time.time()
     model.eval()
-    '''
-    pixel_accs = []
-    f1_score_vals = []
-    all_predictions = []
-    all_labels = []
-    '''
+
     auroc = metrics.AUROC(num_classes=n_classes).to(device)
     f1 = metrics.F1(num_classes=n_classes).to(device)
     iou = metrics.IoU(num_classes=n_classes).to(device)
     accuracy = metrics.Accuracy().to(device)
-    #fpr, tpr, _ = roc_curve(y, y_score)
-    #roc_auc = auc(fpr, tpr)
     #pdb.set_trace()
+    # maintain all metrics required in this dictionary- these are used in the training and evaluation loops
+    eval_metrics = {'accuracy': {'module': accuracy, 'value': None}, 
+                    'f1': {'module': f1, 'value': None},
+                    'iou': {'module': iou, 'value': None},
+                    'auroc':{'module': auroc, 'value': None}
+                    }
     with torch.no_grad():
         for i, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)#N, H, W
             labels = labels.to(device) #N, H, W
             predictions = model(inputs) #N, C, H, W
-            #_, predictions = torch.max(predictions, 1) #N, H, W
-            #evaluate(all_predictions, all_labels)
-            #evaluate(predictions, labels)
             predictions = softmax(predictions)
-            #pdb.set_trace()
+            '''
             #_, labels = torch.max(predictions, dim=1)
             auroc.update(predictions, labels)
-            f1.update(predictions, labels)
-            iou.update(predictions, labels)
-            accuracy.update(predictions, labels)
-            
             '''
-            all_predictions.append(predictions)
-            all_labels.append(labels)
-            '''
-        auroc_val = auroc.compute()
-        f1_val = f1.compute()
-        iou_val = iou.compute()
-        accuracy_val = accuracy.compute()
-        auroc.reset()
-        f1.reset()
-        iou.reset()
-        accuracy.reset()
-        et = time.time()
-        print("Finish validation epoch {}, time elapsed {}".format(epoch, et - st))
+            for key in eval_metrics: 
+                eval_metrics[key]['module'].update(predictions, labels)
+        #pdb.set_trace()
+        for key in eval_metrics: 
+            value = eval_metrics[key]['module'].compute()
+            eval_metrics[key]['value'].append(value)
+            eval_metrics[key]['module'].reset()
+    print("Finish validation epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    for key in eval_metrics: 
+        print("{}: {}".format(key, eval_metrics[key]['value'][-1]))
+        
 
-        # The output has unnormalized scores. To get probabilities, you can run a softmax on it.
-        #probabilities = torch.nn.functional.softmax(output[0], dim=0)
-        '''
-        all_predictions = torch.cat(all_predictions)
-        all_labels = torch.cat(all_labels)
-        pixel_acc, f1_score_val = evaluate(all_predictions, all_labels)
-        '''
-        #for p, l in zip(all_predictions, all_labels):
-            #pixel_acc, f1_score_val = evaluate(l, p)
-            #pixel_accs.append(pixel_acc)
-            #f1_score_vals.append(f1_score_val)
-        #pixel_accs = np.array(pixel_accs).mean()
-        #f1_score_vals = np.array(f1_score_val s).mean()
-        print("Finish evaluation epoch {}, accuracy {}, IoU {}, auroc {}, f1_val {}".format(epoch, accuracy_val, iou_val, auroc_val, f1_val))
+'''
+def evaluate():
+    pixel_accs = []
+    f1_score = []
+'''
 
-
-
-
-def image_grid(images,
-    rows=None,
-    cols=None,
-    fill: bool = True,
-    show_axes: bool = False,
-    rgb: bool = True,
-):
+def image_grid(images, rows=None, cols=None, fill=True, show_axes=False):
     """
     A util function for plotting a grid of images.
 
@@ -453,35 +391,17 @@ def image_grid(images,
 
     gridspec_kw = {"wspace": 0.0, "hspace": 0.0} if fill else {}
     fig, axarr = plt.subplots(rows, cols, gridspec_kw=gridspec_kw, figsize=(15, 9))
-    bleed = 0
-    fig.subplots_adjust(left=bleed, bottom=bleed, right=(1 - bleed), top=(1 - bleed))
+    #bleed = 0
+    #fig.subplots_adjust(left=bleed, bottom=bleed, right=(1 - bleed), top=(1 - bleed))
 
     for ax, im in zip(axarr.ravel(), images):
-        if rgb:
-            # only render RGB channels
-            ax.imshow(im[..., :3])
-        else:
-            # only render Alpha channel
-            ax.imshow(im[..., 3])
+        # only render RGB channels
+        ax.imshow(im[..., :3])
         if not show_axes:
             ax.set_axis_off()
 
 
-# TODO - plot for test images
-
-        
-def get_vis_images(dst, index):    
-    #pdb.set_trace()
-    im_name = dst.files[dst.split][index]
-    im_path = pjoin(dst.root, "JPEGImages", im_name + ".jpg")
-    lbl_path = pjoin(dst.root, "SegmentationClass/pre_encoded", im_name + ".png")
-    im = imageio.imread(im_path)
-    im = im / 255
-    lbl = imageio.imread(lbl_path)
-    lbl = dst.decode_segmap(lbl)
-    images_vis = np.array([im, lbl])#', dtype='uint8')
-    return images_vis
-
+# TODO - plot for test images      
 def visualize(epoch, dst, image_ids):
     images_vis = []
     for image_id in image_ids: 
@@ -494,7 +414,7 @@ def visualize(epoch, dst, image_ids):
         prediction = torch.squeeze(prediction)
         image = torch.squeeze(image)
         
-        image = image * dst.mean[:, None, None] + dst.std[:, None, None]
+        image = image * dst.std[:, None, None] + dst.mean[:, None, None]
         image = torch.movedim(image, 0, -1) # (3,H,W) to (H,W,3) 
 
         image = image.cpu().numpy()
@@ -507,17 +427,10 @@ def visualize(epoch, dst, image_ids):
         image_vis = np.array([image, label, prediction])
         images_vis.append(image_vis)
     
-    #pdb.set_trace()
+    
     images_vis = np.concatenate(images_vis, axis=0)
     image_grid(images_vis, rows=rows, cols=3*cols) 
     plt.savefig(pjoin('vis', 'seg_{}_{}.png'.format(dst.split, epoch)))
-
-
-'''
-images_vis = get_vis_images(train_dst, 0) #TODO use train/val split, random choose index
-image_grid(images_vis,rows=1, cols=2)
-plt.savefig('vis_train.png')
-'''
 
 #for epoch in range(epochs):
 #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
@@ -532,8 +445,11 @@ opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper..
 
 epoch = -1
 evaluate(epoch, trainloader)
-image_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+#image_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+image_ids = np.random.randint(len(train_dst), size=rows*cols)
 visualize(epoch, train_dst, image_ids)
+
+#metrics_values = {'accuracy': [], 'f1': [], 'iou': [], 'auroc': []}
 
 for epoch in range(epochs):
     st = time.time()
@@ -551,11 +467,17 @@ for epoch in range(epochs):
         if i % i_print == 0:
             print("Finish iter {}, loss {}".format(i, loss.data))
     print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    
     evaluate(epoch, trainloader)
+    '''for key in eval_metrics: 
+        print("{}: {}".format(key, eval_metrics[key]['value']))
+        metrics_values[key].append(eval_metrics)
+     '''
     if epoch % i_save == 0:
         torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
     if epoch % i_vis == 0:
         #TODO plot metrics
-        #TODO plot result images
         visualize(epoch, train_dst, image_ids)
+        
+    
         
