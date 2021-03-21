@@ -98,7 +98,7 @@ class pascalVOCDataset(data.Dataset):
         im_name = self.files[self.split][index]
         im_path = pjoin(self.root, "JPEGImages", im_name + ".jpg")
         lbl_path = pjoin(self.root, "SegmentationClass/pre_encoded", im_name + ".png")
-        im = Image.open(im_path) #TODO e images have to be loaded in to a range of [0, 1]
+        im = Image.open(im_path) 
         lbl = Image.open(lbl_path) 
         if self.augmentations is not None:
             im, lbl = self.augmentations(im, lbl)
@@ -232,16 +232,12 @@ class pascalVOCDataset(data.Dataset):
 
         assert expected == 2913, "unexpected dataset sizes"
         
-device = torch.device("cuda")# if torch.cuda.is_available() else "cpu") #TODO multi-GPU      
-num_gpu = list(range(torch.cuda.device_count()))  
-
-
 class Segnet(nn.Module):
   
   def __init__(self, n_classes):
     super(Segnet, self).__init__()
     #define the layers for your model
-    self.vgg_model = vgg.vgg16(pretrained=True, progress=True).to(device)
+    self.vgg_model = vgg.vgg16(pretrained=True, progress=True)#.to(device)
     #del self.vgg_model.classifier
     self.relu    = nn.ReLU(inplace=True)
     self.deconv1 = nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
@@ -279,16 +275,15 @@ local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
 bs = 32 #TODO increase
 num_workers = 8 
 n_classes = 21
-img_size = 256 #'same'
+img_size = 224 #'same'
 
 # Training parameters
-epochs = 8 #use 200 
+epochs = 500 #use 200 
 lr = 0.001
 
 # Logging options
-i_print = 20 #print loss after every i_print iterations
 i_save = 50#save mode after every i_save epochs
-i_vis = 3
+i_vis = 5
 rows, cols = 5, 2 #Show 10 images in the dataset along with target and predicted masks
 
 # dataset variable
@@ -299,13 +294,14 @@ val_dst = pascalVOCDataset(local_path, split="val", is_transform=True, img_size=
 trainloader = torch.utils.data.DataLoader(train_dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) 
 valloader = torch.utils.data.DataLoader(val_dst, batch_size=bs, num_workers=num_workers, pin_memory=True, shuffle=True) 
 
+device = torch.device("cuda")# if torch.cuda.is_available() else "cpu")
+num_gpu = list(range(torch.cuda.device_count()))  
+
 # Creating an instance of the model defined above. 
 # You can modify it incase you need to pass paratemers to the constructor.
 #model = Segnet().to(device)
 model = nn.DataParallel(Segnet(n_classes), device_ids=num_gpu).to(device)
 
-#from sklearn.metrics import f1_score, roc_auc_score
-#from pytorch_lightning.metrics import AUROC, F1, dice_score
 from pytorch_lightning import metrics
 
 def setup_metrics():
@@ -314,17 +310,16 @@ def setup_metrics():
     iou = metrics.IoU(num_classes=n_classes).to(device)
     accuracy = metrics.Accuracy().to(device)
     #pdb.set_trace()
-    # maintain all metrics required in this dictionary- these are used in the training and evaluation loops
+    #maintain all metrics required in this dictionary- these are used in the training and evaluation loops
     eval_metrics = {'accuracy': {'module': accuracy, 'values': []}, 
-                    'f1': {'module': f1, 'values': []},
+                    #'f1': {'module': f1, 'values': []}, #TODO, results are exactly same as accuracy, why? 
                     'iou': {'module': iou, 'values': []},
                     'auroc':{'module': auroc, 'values': []}
                     }
     return eval_metrics
                     
-def evaluate(epoch, dataloader, eval_metrics): #TODO adapt this to val/test data
-    pdb.set_trace()
-    st = time.time()
+def evaluate(epoch, dataloader, eval_metrics): 
+    #st = time.time()
     model.eval()
     with torch.no_grad():
         for i, (inputs, labels) in enumerate(dataloader):
@@ -343,20 +338,23 @@ def evaluate(epoch, dataloader, eval_metrics): #TODO adapt this to val/test data
             value = eval_metrics[key]['module'].compute()
             eval_metrics[key]['values'].append(value.item())
             eval_metrics[key]['module'].reset()
-    print("Finish validation epoch {}, time elapsed {}".format(epoch, time.time() - st))
-    for key in eval_metrics: 
-        print("{}: {}".format(key, eval_metrics[key]['values'][-1]))
+    metrics_string = " ; ".join("{}: {:05.3f}".format(key, eval_metrics[key]['values'][-1])
+                                for key in eval_metrics)
+    print("Training epoch: {}, Eval metrics - ".format(epoch) + metrics_string) 
         
 
-def plot_metrics(eval_metrics): #TODO plot loss?
-        fig = plt.figure(figsize=(13, 5))
+def plot_metrics(epoch, eval_metrics, losses): 
+    fig = plt.figure(figsize=(13, 5))
     ax = fig.gca()
-    for k, l in losses.items():
-        ax.plot(l['values'], label=k + " loss")
+    #pdb.set_trace()
+    for k, l in eval_metrics.items():
+        ax.plot(l['values'], label=k)
+    ax.plot(losses, label='loss')
     ax.legend(fontsize="16")
-    ax.set_xlabel("Iteration", fontsize="16")
-    ax.set_ylabel("Loss", fontsize="16")
-    ax.set_title("Loss vs iterations", fontsize="16")
+    ax.set_xlabel("Epochs", fontsize="16")
+    ax.set_ylabel("Metric/Loss", fontsize="16")
+    ax.set_title("Evaluation metric/Loss vs epochs", fontsize="16")
+    plt.savefig(pjoin('vis', 'metric_{}_{}.png'.format('train', epoch)))
     
 def image_grid(images, rows=None, cols=None, fill=True, show_axes=False):
     """
@@ -383,8 +381,6 @@ def image_grid(images, rows=None, cols=None, fill=True, show_axes=False):
 
     gridspec_kw = {"wspace": 0.0, "hspace": 0.0} if fill else {}
     fig, axarr = plt.subplots(rows, cols, gridspec_kw=gridspec_kw, figsize=(15, 9))
-    #bleed = 0
-    #fig.subplots_adjust(left=bleed, bottom=bleed, right=(1 - bleed), top=(1 - bleed))
 
     for ax, im in zip(axarr.ravel(), images):
         # only render RGB channels
@@ -419,12 +415,10 @@ def visualize(epoch, dst, image_ids):
         image_vis = np.array([image, label, prediction])
         images_vis.append(image_vis)
     
-    
     images_vis = np.concatenate(images_vis, axis=0)
     image_grid(images_vis, rows=rows, cols=3*cols) 
     plt.savefig(pjoin('vis', 'seg_{}_{}.png'.format(dst.split, epoch)))
 
-#for epoch in range(epochs):
 #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
 #model.load_state_dict(ckpt)
         
@@ -437,18 +431,16 @@ opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper..
 
 train_metrics = setup_metrics()
 epoch = -1
-evaluate(epoch, trainloader, train_metrics)
+#evaluate(epoch, trainloader, train_metrics)
 #image_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 image_ids = np.random.randint(len(train_dst), size=rows*cols)
-visualize(epoch, train_dst, image_ids)
+#visualize(epoch, train_dst, image_ids)
 
-#metrics_values = {'accuracy': [], 'f1': [], 'iou': [], 'auroc': []}
-
+losses = []
 for epoch in range(epochs):
     st = time.time()
     model.train()
     for i, (inputs, labels) in enumerate(trainloader):
-        # your code goes here
         opt.zero_grad()
         inputs = inputs.to(device)
         labels = labels.to(device)
@@ -456,17 +448,13 @@ for epoch in range(epochs):
         loss = loss_f(predictions, labels)
         loss.backward()
         opt.step()
-        
-        if i % i_print == 0:
-            print("Finish iter {}, loss {}".format(i, loss.data))
-    print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
+    losses.append(loss)
+    print("Training epoch: {}, loss: {}, time elapsed: {},".format(epoch, loss, time.time() - st))
     
     evaluate(epoch, trainloader, train_metrics)
-    pdb.set_trace()
     if epoch % i_save == 0:
         torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
     if epoch % i_vis == 0:
-        #TODO plot metrics
-        plot_metrics(train_metrics)
+        plot_metrics(epoch, train_metrics, losses)
         visualize(epoch, train_dst, image_ids)
 
