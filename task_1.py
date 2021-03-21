@@ -67,7 +67,9 @@ class pascalVOCDataset(data.Dataset):
         self.img_norm = img_norm
         self.test_mode = test_mode
         self.n_classes = 21
-        self.mean = np.array([104.00699, 116.66877, 122.67892])
+        #self.mean = np.array([104.00699, 116.66877, 122.67892])
+        self.mean = torch.tensor([0.485, 0.456, 0.406])
+        self.std = torch.tensor([0.229, 0.224, 0.225])
         self.files = collections.defaultdict(list)
         self.img_size = img_size if isinstance(img_size, tuple) else (img_size, img_size)
 
@@ -85,7 +87,7 @@ class pascalVOCDataset(data.Dataset):
                 #transforms.Resize(256),
                 #transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.Normalize(self.mean, self.std),
             ]
         )
 
@@ -280,13 +282,14 @@ n_classes = 21
 img_size = 256 #'same'
 
 # Training parameters
-epochs = 1 #use 200 
+epochs = 3 #use 200 
 lr = 0.001
 
 # Logging options
 i_print = 20 #print loss after every i_print iterations
 i_save = 50#save mode after every i_save epochs
-i_vis = 20
+i_vis = 1
+rows, cols = 5, 2 #Show 10 images in the dataset along with target and predicted masks
 
 # dataset variable
 train_dst = pascalVOCDataset(local_path, split="train", is_transform=True, img_size=img_size)
@@ -354,7 +357,7 @@ def evaluate_metrics(target, preds): #IU
     
 #evaluate(train_dst[0][1], train_dst[0][1])
 
-def evaluate(epoch, split): #TODO adapt this to val/test data
+def evaluate(epoch, dataloader): #TODO adapt this to val/test data
     st = time.time()
     model.eval()
     '''
@@ -363,10 +366,6 @@ def evaluate(epoch, split): #TODO adapt this to val/test data
     all_predictions = []
     all_labels = []
     '''
-    if split == 'train':
-        dataloader = trainloader
-    elif split == 'val':
-        raise NotImplementedError('Not done')
     auroc = metrics.AUROC(num_classes=n_classes).to(device)
     f1 = metrics.F1(num_classes=n_classes).to(device)
     iou = metrics.IoU(num_classes=n_classes).to(device)
@@ -483,45 +482,46 @@ def get_vis_images(dst, index):
     images_vis = np.array([im, lbl])#', dtype='uint8')
     return images_vis
 
+def visualize(epoch, dst, image_ids):
+    images_vis = []
+    for image_id in image_ids: 
+        image, label = dst[image_id][0], dst[image_id][1]
+        image = image[None, ...]
 
-image, label = train_dst[0][0], train_dst[0][1]
-image = image[None, ...]
+        prediction = model(image)
+        prediction = torch.argmax(prediction, dim=1)
 
-predicted = model(image)
-predicted = torch.argmax(predicted, dim=1)
+        prediction = torch.squeeze(prediction)
+        image = torch.squeeze(image)
+        
+        image = image * dst.mean[:, None, None] + dst.std[:, None, None]
+        image = torch.movedim(image, 0, -1) # (3,H,W) to (H,W,3) 
 
-predicted = torch.squeeze(predicted)
-pdb.set_trace()
-image = torch.squeeze(image)
-MEAN = torch.tensor([0.485, 0.456, 0.406])
-STD = torch.tensor([0.229, 0.224, 0.225])
-image = image * STD[:, None, None] + MEAN[:, None, None]
-image = torch.movedim(image, 0, -1)
+        image = image.cpu().numpy()
+        label = label.cpu().numpy()
+        prediction = prediction.cpu().numpy()
 
-image = image.cpu().numpy()
-label = label.cpu().numpy()
-predicted = predicted.cpu().numpy()
+        label = dst.decode_segmap(label)
+        prediction = dst.decode_segmap(prediction)
+         
+        image_vis = np.array([image, label, prediction])
+        images_vis.append(image_vis)
+    
+    #pdb.set_trace()
+    images_vis = np.concatenate(images_vis, axis=0)
+    image_grid(images_vis, rows=rows, cols=3*cols) 
+    plt.savefig(pjoin('vis', 'seg_{}_{}.png'.format(dst.split, epoch)))
 
-label = train_dst.decode_segmap(label)
-predicted = train_dst.decode_segmap(predicted)
- 
-images_vis = np.array([image, label, predicted])
-image_grid(images_vis,rows=1, cols=3)
-plt.savefig('vis_train_all.png')
 
-'''
-image, label = train_dst[0][0], train_dst[0][1]     
-image = np.moveaxis(image, 0, -1) # (3,H,W) to (H,W,3) 
-image = image.cpu().numpy()
-label = label.cpu().numpy()
 '''
 images_vis = get_vis_images(train_dst, 0) #TODO use train/val split, random choose index
 image_grid(images_vis,rows=1, cols=2)
 plt.savefig('vis_train.png')
+'''
 
-        #for epoch in range(epochs):
-        #ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
-        #model.load_state_dict(ckpt)
+#for epoch in range(epochs):
+#ckpt = torch.load(, pjoin(model_path, "{}.tar".format(epoch)))
+#model.load_state_dict(ckpt)
         
 # loss function
 loss_f = nn.CrossEntropyLoss() 
@@ -530,7 +530,11 @@ softmax = nn.Softmax(dim=1)
 # optimizer variable
 opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
 
-evaluate(-1, 'train')
+epoch = -1
+evaluate(epoch, trainloader)
+image_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+visualize(epoch, train_dst, image_ids)
+
 for epoch in range(epochs):
     st = time.time()
     model.train()
@@ -547,11 +551,11 @@ for epoch in range(epochs):
         if i % i_print == 0:
             print("Finish iter {}, loss {}".format(i, loss.data))
     print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
-    evaluate(epoch, 'train')
+    evaluate(epoch, trainloader)
     if epoch % i_save == 0:
         torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
     if epoch % i_vis == 0:
         #TODO plot metrics
         #TODO plot result images
-        pass
+        visualize(epoch, train_dst, image_ids)
         
