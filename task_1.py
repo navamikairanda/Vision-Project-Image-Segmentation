@@ -308,36 +308,24 @@ model = nn.DataParallel(Segnet(n_classes), device_ids=num_gpu).to(device)
 #from pytorch_lightning.metrics import AUROC, F1, dice_score
 from pytorch_lightning import metrics
 
-def eval_pixel_acc(target, pred):
-    correct = (pred == target).sum().item() 
-    total = target.shape[0] * target.shape[1] * target.shape[2] # N * H * W
-    #total = target.size # N * H * W
-    return correct / total
-
 def setup_metrics():
-    auroc = metrics.AUROC(num_classes=n_classes)
-    return auroc
-    
-def evaluate_metrics(target, preds): #IU
-    auroc.update(preds, target)
-    auroc.compute()
-    return pixel_acc, f1_score_val
-    
-def evaluate(epoch, dataloader): #TODO adapt this to val/test data
-    st = time.time()
-    model.eval()
-
     auroc = metrics.AUROC(num_classes=n_classes).to(device)
     f1 = metrics.F1(num_classes=n_classes).to(device)
     iou = metrics.IoU(num_classes=n_classes).to(device)
     accuracy = metrics.Accuracy().to(device)
     #pdb.set_trace()
     # maintain all metrics required in this dictionary- these are used in the training and evaluation loops
-    eval_metrics = {'accuracy': {'module': accuracy, 'value': None}, 
-                    'f1': {'module': f1, 'value': None},
-                    'iou': {'module': iou, 'value': None},
-                    'auroc':{'module': auroc, 'value': None}
+    eval_metrics = {'accuracy': {'module': accuracy, 'values': []}, 
+                    'f1': {'module': f1, 'values': []},
+                    'iou': {'module': iou, 'values': []},
+                    'auroc':{'module': auroc, 'values': []}
                     }
+    return eval_metrics
+                    
+def evaluate(epoch, dataloader, eval_metrics): #TODO adapt this to val/test data
+    pdb.set_trace()
+    st = time.time()
+    model.eval()
     with torch.no_grad():
         for i, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)#N, H, W
@@ -353,19 +341,23 @@ def evaluate(epoch, dataloader): #TODO adapt this to val/test data
         #pdb.set_trace()
         for key in eval_metrics: 
             value = eval_metrics[key]['module'].compute()
-            eval_metrics[key]['value'].append(value)
+            eval_metrics[key]['values'].append(value.item())
             eval_metrics[key]['module'].reset()
     print("Finish validation epoch {}, time elapsed {}".format(epoch, time.time() - st))
     for key in eval_metrics: 
-        print("{}: {}".format(key, eval_metrics[key]['value'][-1]))
+        print("{}: {}".format(key, eval_metrics[key]['values'][-1]))
         
 
-'''
-def evaluate():
-    pixel_accs = []
-    f1_score = []
-'''
-
+def plot_metrics(eval_metrics): #TODO plot loss?
+        fig = plt.figure(figsize=(13, 5))
+    ax = fig.gca()
+    for k, l in losses.items():
+        ax.plot(l['values'], label=k + " loss")
+    ax.legend(fontsize="16")
+    ax.set_xlabel("Iteration", fontsize="16")
+    ax.set_ylabel("Loss", fontsize="16")
+    ax.set_title("Loss vs iterations", fontsize="16")
+    
 def image_grid(images, rows=None, cols=None, fill=True, show_axes=False):
     """
     A util function for plotting a grid of images.
@@ -443,8 +435,9 @@ softmax = nn.Softmax(dim=1)
 # optimizer variable
 opt = optim.Adam(model.parameters(), lr=lr) #Try SGD like in paper.. 
 
+train_metrics = setup_metrics()
 epoch = -1
-evaluate(epoch, trainloader)
+evaluate(epoch, trainloader, train_metrics)
 #image_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 image_ids = np.random.randint(len(train_dst), size=rows*cols)
 visualize(epoch, train_dst, image_ids)
@@ -468,16 +461,12 @@ for epoch in range(epochs):
             print("Finish iter {}, loss {}".format(i, loss.data))
     print("Finish training epoch {}, time elapsed {}".format(epoch, time.time() - st))
     
-    evaluate(epoch, trainloader)
-    '''for key in eval_metrics: 
-        print("{}: {}".format(key, eval_metrics[key]['value']))
-        metrics_values[key].append(eval_metrics)
-     '''
+    evaluate(epoch, trainloader, train_metrics)
+    pdb.set_trace()
     if epoch % i_save == 0:
         torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
     if epoch % i_vis == 0:
         #TODO plot metrics
+        plot_metrics(train_metrics)
         visualize(epoch, train_dst, image_ids)
-        
-    
-        
+
