@@ -21,6 +21,7 @@ import torch.nn as nn
 import torchvision.models.vgg as vgg
 import torch.optim as optim
 import matplotlib.pyplot as plt
+import sys
 
 class pascalVOCDataset(data.Dataset):
     """Data loader for the Pascal VOC semantic segmentation dataset.
@@ -268,7 +269,8 @@ class Segnet(nn.Module):
     #return output_zero
     
     
-
+expt = sys.argv[1]
+os.makedirs(expt, exist_ok=True)
 # Hyper-parameters
 # Dataset options
 local_path = 'VOCdevkit/VOC2012/' # modify it according to your device
@@ -276,7 +278,7 @@ bs = 32 #TODO increase
 num_workers = 8 
 n_classes = 21
 img_size = 224 #'same'
-
+#TODO weight decay, plot results for validation data
 # Training parameters
 epochs = 500 #use 200 
 lr = 0.001
@@ -354,7 +356,7 @@ def plot_metrics(epoch, eval_metrics, losses):
     ax.set_xlabel("Epochs", fontsize="16")
     ax.set_ylabel("Metric/Loss", fontsize="16")
     ax.set_title("Evaluation metric/Loss vs epochs", fontsize="16")
-    plt.savefig(pjoin('vis', 'metric_{}_{}.png'.format('train', epoch)))
+    plt.savefig(pjoin(expt, 'metric_{}_{}.png'.format('train', epoch)))
     
 def image_grid(images, rows=None, cols=None, fill=True, show_axes=False):
     """
@@ -453,7 +455,7 @@ for epoch in range(epochs):
     
     evaluate(epoch, trainloader, train_metrics)
     if epoch % i_save == 0:
-        torch.save(model.state_dict(), pjoin('model', "{}.tar".format(epoch)))
+        torch.save(model.state_dict(), pjoin(expt, "{}.tar".format(epoch)))
     if epoch % i_vis == 0:
         plot_metrics(epoch, train_metrics, losses)
         visualize(epoch, train_dst, image_ids)
